@@ -5,6 +5,7 @@ import com.template.contracts.CarContract
 import com.template.states.CarState
 import net.corda.core.contracts.Command
 import net.corda.core.contracts.UniqueIdentifier
+import net.corda.core.contracts.requireThat
 import net.corda.core.flows.*
 import net.corda.core.identity.Party
 import net.corda.core.transactions.SignedTransaction
@@ -69,15 +70,39 @@ class CarIssueInitiator(
         /**
          * Collect signs using subflow.
          * Sub flow returns sign if verified by all parties
+         * initiateFlow creates sessions, but not send message.
+         * After this, you need send flow.
          * */
-        return tx
+        val sessions = (carState.participants - ourIdentity).map { initiateFlow(it as Party) }
+        /* Sub flow is called flow in the flow */
+        /* Collect signatures from sessions to tx */
+        val stx = subFlow(CollectSignaturesFlow(tx, sessions))
+        /* After collecting signs, finalize flow.  */
+        /* Notice Notary to commit consuming, and announce commitment to all participants. */
+        /* After notarization announce, all participants commits. */
+        return subFlow(FinalityFlow(stx, sessions))
     }
 }
 
 @InitiatedBy(Initiator::class)
-class CarClassResponder(val counterpartySession: FlowSession) : FlowLogic<SignedTransaction>() {
+class CarClassResponder(val counterpartSession: FlowSession) : FlowLogic<SignedTransaction>() {
+    /**
+     * Lastly, the body of the responder flow must be completed. The following code checks the transaction contents, signs it, and sends it back to the initiator:
+     * */
     @Suspendable
     override fun call(): SignedTransaction {
         // Responder flow logic goes here.
+        /**
+         * The checkTransaction function should be used only to model business logic.
+         * contract’s verify function should be used to define what is and is not possible within a transaction.
+         * */
+        val signedTransactionFlow = object : SignTransactionFlow(counterpartSession) {
+            override fun checkTransaction(stx: SignedTransaction) = requireThat {
+                val output = stx.tx.outputs.single().data
+                "The output must be a CarState" using (output is CarState)
+            }
+        }
+        val txWeJustSignedId = subFlow(signedTransactionFlow)
+        return subFlow(ReceiveFinalityFlow(counterpartSession, txWeJustSignedId.id))
     }
 }
